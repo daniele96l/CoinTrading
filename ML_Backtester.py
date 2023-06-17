@@ -55,7 +55,6 @@ else:
                      'EMA_100', 'RSI', 'MACD', 'bollinger_hband', 'bollinger_lband',
                       'OBV']
 
-
 df = df.dropna(axis=1, how='all')
 df.dropna(inplace=True)
 
