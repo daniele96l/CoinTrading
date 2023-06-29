@@ -10,119 +10,128 @@ import ta
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-data = "btc_weekly_data.csv"
-#data = "btc_daily_data.csv"
-#data = "btc_monthly_data.csv"
-
-df = pd.read_csv(data)
-
-# Assuming your DataFrame is named df
-df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms') # Convert timestamp to datetime
-df.set_index('timestamp', inplace=True) # Set the timestamp as the index
-
-# Calculate the Simple Moving Average (SMA)
-df['SMA_30'] = ta.trend.sma_indicator(df['close'], window=30)
-df['SMA_100'] = ta.trend.sma_indicator(df['close'], window=100)
-
-# Calculate the Exponential Moving Average (EMA)
-df['EMA_30'] = ta.trend.ema_indicator(df['close'], window=30)
-df['EMA_100'] = ta.trend.ema_indicator(df['close'], window=100)
-
-# Calculate the Relative Strength Index (RSI)
-df['RSI'] = ta.momentum.rsi(df['close'], window=14)
-
-# Calculate the Moving Average Convergence Divergence (MACD)
-df['MACD'] = ta.trend.macd_diff(df['close'])
-
-# Bollinger Bands
-bollinger = ta.volatility.BollingerBands(close=df['close'], window=20, window_dev=2)
-df['bollinger_hband'] = bollinger.bollinger_hband()
-df['bollinger_lband'] = bollinger.bollinger_lband()
+def load_and_merge_data(data, sentiment):
+    df = pd.read_csv(data)
+    df['date'] = pd.to_datetime(df['date'])
+    df['date'] = df['date'].dt.date  # convert to just date
+    df = df.merge(sentiment, on='date', how='left')
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
 
 
-# On-Balance Volume (OBV)
-df['OBV'] = ta.volume.on_balance_volume(df['close'], df['volume'])
+def calculate_indicators(df):
+    df['pc_change'] = df['close'].pct_change()
+    df['SMA_30'] = ta.trend.sma_indicator(df['close'], window=30)
+    df['SMA_100'] = ta.trend.sma_indicator(df['close'], window=100)
+    df['EMA_30'] = ta.trend.ema_indicator(df['close'], window=30)
+    df['EMA_100'] = ta.trend.ema_indicator(df['close'], window=100)
+    df['RSI'] = ta.momentum.rsi(df['close'], window=14)
+    df['MACD'] = ta.trend.macd_diff(df['close'])
 
-df.drop(['open', 'high', 'low', 'date'], axis=1, inplace=True)
+    bollinger = ta.volatility.BollingerBands(close=df['close'], window=20, window_dev=2)
+    df['bollinger_hband'] = bollinger.bollinger_hband()
+    df['bollinger_lband'] = bollinger.bollinger_lband()
+    df['OBV'] = ta.volume.on_balance_volume(df['close'], df['volume'])
 
-# Select columns to scale
-if data == "btc_monthly_data.csv":
-    cols_to_scale = ['volume', 'SMA_30',  'EMA_30',
-                      'RSI', 'MACD', 'bollinger_hband', 'bollinger_lband',
-                      'OBV']
-else:
-    cols_to_scale = ['volume', 'SMA_30', 'SMA_100', 'EMA_30',
-                     'EMA_100', 'RSI', 'MACD', 'bollinger_hband', 'bollinger_lband',
-                      'OBV']
+    return df
 
-df = df.dropna(axis=1, how='all')
-df.dropna(inplace=True)
 
-# Apply the scaler to the columns
-df[cols_to_scale] = StandardScaler().fit_transform(df[cols_to_scale])
-df['pc_change'] = df['close'].pct_change()
+def preprocess_data(df, data):
+    df.drop(['open', 'high', 'low', 'date'], axis=1, inplace=True)
 
-# Create quantile thresholds
-upper_threshold = df['pc_change'].quantile(0.5000001)
-lower_threshold = df['pc_change'].quantile(0.50)
+    cols_to_scale = ['volume', 'SMA_30', 'SMA_100', 'EMA_30', 'EMA_100', 'RSI',
+                     'MACD', 'bollinger_hband', 'bollinger_lband', 'OBV']
 
-# Create new column based on conditions
-df['buy/sell'] = np.where(df['pc_change'] > upper_threshold, 1,(np.where(df['pc_change'] <= lower_threshold, -1,0)))
-df['buy/sell'] = df['buy/sell'].shift(-1)
-df.head()
+    if data == "btc_monthly_data.csv":
+        cols_to_scale.remove('SMA_100')
+        cols_to_scale.remove('EMA_100')
 
-# Remove NaN values
-df = df.dropna(axis=1, how='all')
-df = df.dropna()
-df = df.drop(['close', 'pc_change'], axis=1)
-# Set up features (X) and target (y)
-X = df.drop('buy/sell', axis=1)
-y = df['buy/sell']
-# Map the labels
-mapping = {-1: 0, 1: 1}
+    df[cols_to_scale] = StandardScaler().fit_transform(df[cols_to_scale])
 
-df.sort_index(inplace=True)
+    df.dropna(axis=1, how='all', inplace=True)
+    df.dropna(inplace=True)
 
-train_size = int(len(df) * 0.8)
+    upper_threshold = df['pc_change'].quantile(0.5000001)
+    lower_threshold = df['pc_change'].quantile(0.50)
 
-# Split the dataset
-X_train, X_test = X[:train_size], X[train_size:]
-y_train, y_test = y[:train_size], y[train_size:]
+    df['buy/sell'] = np.where(df['pc_change'] > upper_threshold, 1,
+                              (np.where(df['pc_change'] <= lower_threshold, -1, 0)))
+    df['buy/sell'] = df['buy/sell'].shift(-1)
+    pc_change = df['pc_change']
 
-y_test = y_test.map(mapping)
-y_train = y_train.map(mapping)
+    df = df.drop(['pc_change', 'timestamp','volume','close','listing_close'], axis=1)
 
-# Set up XGBoost classifier
+    df.dropna(axis=1, how='all', inplace=True)
+    df.dropna(inplace=True)
+    return df
 
-param_grid = [
-    {'n_estimators': [10, 25, 50, 100], 'max_features': ['auto', 'sqrt', 'log2'],
-     'max_depth' : [4,5,6,7,8], 'criterion' :['gini', 'entropy']}
-]
 
-# Perform the search
-model = GridSearchCV(RandomForestClassifier(), param_grid, cv=5,scoring='accuracy', verbose = 2, n_jobs=-1)
-#model = GridSearchCV(xgb.XGBClassifier(), param_grid, cv=5,scoring='accuracy', verbose = 2, n_jobs=-1)
+def split_data(df):
+    X = df.drop('buy/sell', axis=1)
+    y = df['buy/sell']
 
-# Train the model
-model.fit(X_train, y_train)
+    mapping = {-1: 0, 1: 1}
+    df.sort_index(inplace=True)
 
-# Make predictions
-y_pred = model.predict(X_test)
+    train_size = int(len(df) * 0.8)
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
 
-inverse_mapping = {0: -1, 1: 1}
-y_pred = pd.Series(y_pred).map(inverse_mapping)
-y_test = y_test.map(inverse_mapping)
+    y_test = y_test.map(mapping)
+    y_train = y_train.map(mapping)
 
-importances = model.best_estimator_.feature_importances_
+    return X_train, X_test, y_train, y_test
 
-# Convert the importances into one-dimensional 1 darray with corresponding df column names as axis labels
-f_importances = pd.Series(importances, df.columns[:-1])
 
-# Sort the array in descending order of the importances
-f_importances.sort_values(ascending=False, inplace=True)
+def train_model(X_train, y_train):
+    param_grid = [
+        {'n_estimators': [10, 25, 50, 100], 'max_features': ['auto', 'sqrt', 'log2'],
+         'max_depth': [4, 5, 6, 7, 8], 'criterion': ['gini', 'entropy']}
+    ]
+    model = GridSearchCV(RandomForestClassifier(), param_grid, cv=5, scoring='accuracy', verbose=2, n_jobs=-1)
+    model.fit(X_train, y_train)
+    return model
 
-print(f_importances)
 
-# Evaluate the model
-print(classification_report(y_test, y_pred))
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    inverse_mapping = {0: -1, 1: 1}
+    y_pred = pd.Series(y_pred).map(inverse_mapping)
+    y_test = y_test.map(inverse_mapping)
 
+    importances = model.best_estimator_.feature_importances_
+    f_importances = pd.Series(importances, df.columns[:-1])
+    f_importances.sort_values(ascending=False, inplace=True)
+
+    print(f_importances)
+    print(classification_report(y_test, y_pred))
+
+
+tech = 'W'
+sen = 'D'
+sentiment = 'sentiment_btc.csv'
+
+df_sen = pd.read_csv(sentiment)
+
+if tech == 'W':
+    data = "btc_weekly_data.csv"
+if tech == 'D':
+    data = "btc_daily_data.csv"
+
+df_sen['date'] = pd.to_datetime(df_sen['date'])
+
+if sen == 'D':
+    df_sen['date'] = df_sen['date'].dt.date
+    sentiment = df_sen.groupby('date').sum().reset_index()
+if sen == 'W':
+    df_sen['date'] = pd.to_datetime(df_sen['date'])  # Ensure the date is in datetime format
+    df_sen.set_index('date', inplace=True)  # Set 'date' as the DataFrame index
+    df_sen = df_sen.resample('W').sum().reset_index()  # Resample to weekly frequency, summing the values
+    df_sen['date'] = df_sen['date'].dt.date
+
+df = load_and_merge_data(data, sentiment)
+df = calculate_indicators(df)
+df = preprocess_data(df, data)
+X_train, X_test, y_train, y_test = split_data(df)
+model = train_model(X_train, y_train)
+evaluate_model(model, X_test, y_test)
